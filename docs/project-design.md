@@ -147,28 +147,47 @@ erDiagram
     }
 ```
 
-## 4. Backend Architecture
+## 4. Microservices Architecture
 
 ```mermaid
 flowchart TD
-    A[React Frontend] --> B[REST API]
+    A[React Frontend] --> B[API Gateway]
+    B --> C[Auth Service]
+    B --> D[Profile Service]
+    B --> E[Job Service]
+    B --> F[Resume Service]
+    B --> G[Application Service]
 
-    B --> C[Spring Security + JWT]
-    B --> D[Controller Layer]
-    D --> E[Service Layer]
-    E --> F[Spring Data JPA Repositories]
-    F --> G[(PostgreSQL Database)]
+    C --> H[(Auth DB)]
+    D --> I[(Profile DB)]
+    E --> J[(Job DB)]
+    F --> K[(Resume DB)]
+    G --> L[(Application DB)]
 
-    E --> H[Resume Service]
-    H --> I[Apache PDFBox Text Extractor]
-    I --> J[Claude AI Service]
-    J --> K[Claude API]
-
-    H --> L[Local/Cloud File Storage]
-    E --> M[Job Service]
-    E --> N[Application Service]
-    N --> J
+    F --> M[Apache PDFBox]
+    F --> N[Cloud File Storage]
+    F --> O[AI Service]
+    G --> P[Message Broker]
+    P --> O
+    O --> Q[Claude API]
+    O --> R[(AI Analysis DB)]
 ```
+
+Each service is a separate Spring Boot application with its own database/schema. The API Gateway is the only public backend entry point; it routes requests, validates JWTs, and applies shared concerns such as CORS and rate limiting. Services communicate synchronously through internal REST APIs when an immediate response is required, and asynchronously through a message broker for long-running AI work.
+
+| Service | Responsibility | Owns data |
+| --- | --- | --- |
+| API Gateway | Request routing, JWT validation, CORS, rate limiting | None |
+| Auth Service | Registration, login, token generation, user roles | Users and credentials |
+| Profile Service | Candidate and recruiter profiles | Candidate/recruiter profiles |
+| Job Service | Job creation, search, updates, deactivation | Jobs |
+| Resume Service | File upload, PDF text extraction, resume records | Resumes and file references |
+| AI Service | Resume analysis and job-match generation using Claude | AI analyses and processing status |
+| Application Service | Applications and recruiter status changes | Applications |
+
+### Asynchronous AI Processing
+
+Resume analysis and match scoring can take longer than a normal API request, so they should run asynchronously. Resume Service or Application Service publishes an event such as `resume.uploaded` or `application.created` to the message broker. AI Service consumes the event, calls Claude, saves the result, and publishes `resume.analyzed` or `application.match-scored`. This keeps upload/application APIs responsive and supports safe retries if the AI provider is temporarily unavailable.
 
 ## 5. AI Resume Analyzer Flow
 
@@ -176,19 +195,27 @@ flowchart TD
 sequenceDiagram
     participant Candidate
     participant Frontend
-    participant Backend
+    participant Gateway
+    participant ResumeService as Resume Service
     participant PDFParser
+    participant Broker as Message Broker
+    participant AIService as AI Service
     participant Claude
-    participant Database
+    participant ResumeDB as Resume DB
 
     Candidate->>Frontend: Upload resume PDF
-    Frontend->>Backend: POST /api/resumes/upload
-    Backend->>PDFParser: Extract text from PDF
-    PDFParser-->>Backend: Resume text
-    Backend->>Claude: Analyze resume text
-    Claude-->>Backend: Summary, skills, experience, suggestions
-    Backend->>Database: Save resume + AI analysis
-    Backend-->>Frontend: Resume analysis response
+    Frontend->>Gateway: POST /api/resumes/upload
+    Gateway->>ResumeService: Route authenticated request
+    ResumeService->>PDFParser: Extract text from PDF
+    PDFParser-->>ResumeService: Resume text
+    ResumeService->>ResumeDB: Save resume (PROCESSING)
+    ResumeService-->>Gateway: Upload accepted
+    Gateway-->>Frontend: Upload accepted
+    ResumeService->>Broker: Publish resume.uploaded
+    Broker->>AIService: Deliver event
+    AIService->>Claude: Analyze resume text
+    Claude-->>AIService: Summary, skills, experience, suggestions
+    AIService->>ResumeDB: Save AI analysis (COMPLETED)
     Frontend-->>Candidate: Show AI resume insights
 ```
 
@@ -198,18 +225,28 @@ sequenceDiagram
 sequenceDiagram
     participant Candidate
     participant Frontend
-    participant Backend
+    participant Gateway
+    participant ApplicationService as Application Service
+    participant JobService as Job Service
+    participant ResumeService as Resume Service
+    participant Broker as Message Broker
+    participant AIService as AI Service
     participant Claude
-    participant Database
+    participant ApplicationDB as Application DB
 
     Candidate->>Frontend: Click Apply
-    Frontend->>Backend: POST /api/applications
-    Backend->>Database: Fetch job description
-    Backend->>Database: Fetch candidate resume text
-    Backend->>Claude: Compare resume with job description
-    Claude-->>Backend: Match score, strengths, missing skills, reasoning
-    Backend->>Database: Save application with AI match result
-    Backend-->>Frontend: Application submitted
+    Frontend->>Gateway: POST /api/applications
+    Gateway->>ApplicationService: Route authenticated request
+    ApplicationService->>JobService: Fetch job description
+    ApplicationService->>ResumeService: Fetch selected resume text
+    ApplicationService->>ApplicationDB: Save application (MATCH_PENDING)
+    ApplicationService-->>Gateway: Application submitted
+    Gateway-->>Frontend: Application submitted
+    ApplicationService->>Broker: Publish application.created
+    Broker->>AIService: Deliver event
+    AIService->>Claude: Generate match score
+    Claude-->>AIService: Score, strengths, missing skills, reasoning
+    AIService->>ApplicationDB: Save match result (MATCH_READY)
     Frontend-->>Candidate: Show applied status
 ```
 
@@ -239,6 +276,8 @@ flowchart TD
 ```
 
 ## 8. Main API Endpoints
+
+All public endpoints are exposed through the API Gateway. The gateway forwards each request to its owning internal service; clients never call a service directly.
 
 ### Auth
 
@@ -282,7 +321,9 @@ flowchart TD
 | --- | --- |
 | Frontend | React + Vite |
 | Backend | Java + Spring Boot |
+| Architecture | Spring Boot microservices + API Gateway |
 | Database | PostgreSQL |
+| Service Communication | Internal REST + RabbitMQ/Kafka events |
 | ORM | Spring Data JPA + Hibernate |
 | Auth | Spring Security + JWT + BCrypt |
 | File Upload | Spring MultipartFile |
@@ -296,25 +337,23 @@ flowchart TD
 ```text
 SmartHire-AI/
   backend/
-    src/
-      main/
-        java/
-          com/
-            smarthire/
-              SmartHireApplication.java
-              config/
-              controller/
-              dto/
-              entity/
-              enums/
-              exception/
-              repository/
-              security/
-              service/
-        resources/
-          application.properties
-    uploads/
-    pom.xml
+    api-gateway/
+    auth-service/
+      src/main/java/com/smarthire/auth/
+    profile-service/
+      src/main/java/com/smarthire/profile/
+    job-service/
+      src/main/java/com/smarthire/job/
+    resume-service/
+      src/main/java/com/smarthire/resume/
+    application-service/
+      src/main/java/com/smarthire/application/
+    ai-service/
+      src/main/java/com/smarthire/ai/
+    shared-contracts/
+      events/
+      dto/
+    docker-compose.yml
 
   frontend/
     src/
@@ -339,13 +378,13 @@ Day 1 should focus only on the foundation:
 
 1. Create backend and frontend folders.
 2. Setup Spring Boot backend project.
-3. Connect PostgreSQL database.
-4. Create User entity with role enum.
-5. Add UserRepository with Spring Data JPA.
-6. Add register/login APIs.
-7. Add Spring Security JWT filter.
-8. Test auth APIs with Postman/Thunder Client.
+3. Configure PostgreSQL and create an isolated Auth Service database/schema.
+4. Create Auth Service User entity with role enum and UserRepository.
+5. Add register/login APIs and Spring Security JWT handling.
+6. Add API Gateway routes for Auth Service.
+7. Create Docker Compose configuration for PostgreSQL, gateway, and Auth Service.
+8. Test gateway-to-auth APIs with Postman/Thunder Client.
 
 ## 12. Interview Explanation Pitch
 
-"SmartHire AI is a Java full-stack recruitment platform where candidates can upload resumes and recruiters can post jobs. I built the backend with Spring Boot, Spring Security, JWT authentication, Spring Data JPA, Hibernate, and PostgreSQL. I integrated Claude API in two places: first for resume analysis, where the uploaded PDF is converted into text using Apache PDFBox and sent to Claude for structured skill and summary extraction; second for AI match scoring, where Claude compares the resume with the job description and returns a match percentage, strengths, missing skills, and reasoning. The frontend is built with React and Vite, and the system uses role-based dashboards for candidates and recruiters."
+"SmartHire AI is a Java full-stack recruitment platform where candidates can upload resumes and recruiters can post jobs. The backend uses Spring Boot microservices behind an API Gateway: Auth, Profile, Job, Resume, Application, and AI services. Each service owns its database/schema, which keeps domains independently deployable and prevents direct cross-service database access. Services use internal REST calls for immediate reads and event-driven messaging for long-running AI jobs. Resume uploads are parsed with Apache PDFBox and analyzed by Claude asynchronously; application match scoring is also processed asynchronously, then the score, strengths, missing skills, and reasoning are saved for recruiters and candidates. The frontend is built with React and Vite, with role-based dashboards for candidates and recruiters."
