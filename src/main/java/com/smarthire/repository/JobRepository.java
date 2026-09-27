@@ -1,0 +1,1 @@
+package com.smarthire.repository; import com.smarthire.entity.Job; import java.util.List; import org.springframework.data.jpa.repository.JpaRepository; public interface JobRepository extends JpaRepository<Job,Long>{ List<Job> findByActiveTrueOrderByCreatedAtDesc(); List<Job> findByRecruiterIdOrderByCreatedAtDesc(Long recruiterId); }

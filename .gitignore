@@ -1,5 +1,6 @@
 # Java / Maven
 target/
+uploads/
 *.class
 *.jar
 *.war
@@ -22,9 +23,6 @@ application-local.properties
 # Logs
 *.log
 logs/
-
-# Uploads
-uploads/
 
 # OS
 .DS_Store

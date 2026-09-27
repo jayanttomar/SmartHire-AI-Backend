@@ -48,4 +48,6 @@ public class User {
     public String getEmail() { return email; }
     public String getPasswordHash() { return passwordHash; }
     public Role getRole() { return role; }
+
+    public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
 }
